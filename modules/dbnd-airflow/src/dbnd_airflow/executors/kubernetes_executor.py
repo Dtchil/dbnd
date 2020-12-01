@@ -20,7 +20,11 @@ import signal
 import time
 import typing
 
-from airflow.contrib.executors.kubernetes_executor import (
+from distutils.version import LooseVersion
+
+import airflow
+
+from airflow.executors.kubernetes_executor import (
     AirflowKubernetesScheduler,
     KubeConfig,
     KubernetesExecutor,
@@ -33,6 +37,7 @@ from airflow.utils.state import State
 from dbnd._core.current import try_get_databand_run
 from dbnd._core.errors.base import DatabandRuntimeError, DatabandSigTermError
 from dbnd._core.utils.basics.signal_utils import safe_signal
+from dbnd_airflow.backports.kubernetes_executor import make_safe_label_value
 from dbnd_airflow_contrib.kubernetes_metrics_logger import KubernetesMetricsLogger
 
 
@@ -88,7 +93,7 @@ def _update_airflow_kube_config(airflow_kube_config, engine_config):
         airflow_kube_config.kube_image_pull_policy = ec.image_pull_policy
     if ec.node_selectors is not None:
         airflow_kube_config.kube_node_selectors.update(ec.node_selectors)
-    if ec.annotations is not None:
+    if ec.annotations is not None and airflow_kube_config.kube_annotations is not None:
         airflow_kube_config.kube_annotations.update(ec.annotations)
 
     if ec.pods_creation_batch_size is not None:
@@ -151,14 +156,25 @@ class DbndKubernetesScheduler(AirflowKubernetesScheduler):
         return None
 
     def _make_kube_watcher_dbnd(self):
-        watcher = DbndKubernetesJobWatcher(
-            namespace=self.namespace,
-            watcher_queue=self.watcher_queue,
-            resource_version=self.current_resource_version,
-            worker_uuid=self.worker_uuid,
-            kube_config=self.kube_config,
-            kube_dbnd=self.kube_dbnd,
-        )
+        if LooseVersion(airflow.version.version) > LooseVersion("1.10.10"):
+            watcher = DbndKubernetesJobWatcher(
+                namespace=self.namespace,
+                watcher_queue=self.watcher_queue,
+                multi_namespace_mode=False,
+                resource_version=self.current_resource_version,
+                worker_uuid=self.worker_uuid,
+                kube_config=self.kube_config,
+                kube_dbnd=self.kube_dbnd,
+            )
+        else:
+            watcher = DbndKubernetesJobWatcher(
+                namespace=self.namespace,
+                watcher_queue=self.watcher_queue,
+                resource_version=self.current_resource_version,
+                worker_uuid=self.worker_uuid,
+                kube_config=self.kube_config,
+                kube_dbnd=self.kube_dbnd,
+            )
         watcher.start()
         return watcher
 
@@ -202,8 +218,8 @@ class DbndKubernetesScheduler(AirflowKubernetesScheduler):
             cmds=pod_command,
             labels={
                 "airflow-worker": self.worker_uuid,
-                "dag_id": self._make_safe_label_value(dag_id),
-                "task_id": self._make_safe_label_value(task_run.task_af_id),
+                "dag_id": make_safe_label_value(dag_id),
+                "task_id": make_safe_label_value(task_run.task_af_id),
                 "execution_date": self._datetime_to_label_safe_datestring(
                     execution_date
                 ),
